@@ -2,6 +2,13 @@ import Flutter
 import HealthKit
 import UIKit
 
+enum RecordingMethod: Int {
+    case unknown = 0           // RECORDING_METHOD_UNKNOWN (not supported on iOS)
+    case active = 1            // RECORDING_METHOD_ACTIVELY_RECORDED (not supported on iOS)
+    case automatic = 2         // RECORDING_METHOD_AUTOMATICALLY_RECORDED
+    case manual = 3            // RECORDING_METHOD_MANUAL_ENTRY
+}
+
 public class SwiftHealthPlugin: NSObject, FlutterPlugin {
     
     let healthStore = HKHealthStore()
@@ -20,6 +27,7 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
     
     // Health Data Type Keys
     let ACTIVE_ENERGY_BURNED = "ACTIVE_ENERGY_BURNED"
+    let ATRIAL_FIBRILLATION_BURDEN = "ATRIAL_FIBRILLATION_BURDEN"
     let AUDIOGRAM = "AUDIOGRAM"
     let BASAL_ENERGY_BURNED = "BASAL_ENERGY_BURNED"
     let BLOOD_GLUCOSE = "BLOOD_GLUCOSE"
@@ -133,13 +141,11 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
     let DISTANCE_CYCLING = "DISTANCE_CYCLING"
     let FLIGHTS_CLIMBED = "FLIGHTS_CLIMBED"
     let MINDFULNESS = "MINDFULNESS"
-    let SLEEP_IN_BED = "SLEEP_IN_BED"
     let SLEEP_ASLEEP = "SLEEP_ASLEEP"
-    let SLEEP_ASLEEP_CORE = "SLEEP_ASLEEP_CORE"
-    let SLEEP_ASLEEP_DEEP = "SLEEP_ASLEEP_DEEP"
-    let SLEEP_ASLEEP_REM = "SLEEP_ASLEEP_REM"
     let SLEEP_AWAKE = "SLEEP_AWAKE"
     let SLEEP_DEEP = "SLEEP_DEEP"
+    let SLEEP_IN_BED = "SLEEP_IN_BED"
+    let SLEEP_LIGHT = "SLEEP_LIGHT"
     let SLEEP_REM = "SLEEP_REM"
     
     let EXERCISE_TIME = "EXERCISE_TIME"
@@ -414,25 +420,31 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
               let type = (arguments["dataTypeKey"] as? String),
               let unit = (arguments["dataUnitKey"] as? String),
               let startTime = (arguments["startTime"] as? NSNumber),
-              let endTime = (arguments["endTime"] as? NSNumber)
+              let endTime = (arguments["endTime"] as? NSNumber),
+              let recordingMethod = (arguments["recordingMethod"] as? Int)
         else {
             throw PluginError(message: "Invalid Arguments")
         }
         
         let dateFrom = Date(timeIntervalSince1970: startTime.doubleValue / 1000)
         let dateTo = Date(timeIntervalSince1970: endTime.doubleValue / 1000)
+
+        let isManualEntry = recordingMethod == RecordingMethod.manual.rawValue
+        let metadata: [String: Any] = [
+            HKMetadataKeyWasUserEntered: NSNumber(value: isManualEntry)
+        ]
         
         let sample: HKObject
         
         if dataTypeLookUp(key: type).isKind(of: HKCategoryType.self) {
             sample = HKCategorySample(
                 type: dataTypeLookUp(key: type) as! HKCategoryType, value: Int(value), start: dateFrom,
-                end: dateTo)
+                end: dateTo, metadata: metadata)
         } else {
             let quantity = HKQuantity(unit: unitDict[unit]!, doubleValue: value)
             sample = HKQuantitySample(
                 type: dataTypeLookUp(key: type) as! HKQuantityType, quantity: quantity, start: dateFrom,
-                end: dateTo)
+                end: dateTo, metadata: metadata)
         }
         
         HKHealthStore().save(
@@ -506,21 +518,27 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
               let systolic = (arguments["systolic"] as? Double),
               let diastolic = (arguments["diastolic"] as? Double),
               let startTime = (arguments["startTime"] as? NSNumber),
-              let endTime = (arguments["endTime"] as? NSNumber)
+              let endTime = (arguments["endTime"] as? NSNumber),
+              let recordingMethod = (arguments["recordingMethod"] as? Int)
         else {
             throw PluginError(message: "Invalid Arguments")
         }
         let dateFrom = Date(timeIntervalSince1970: startTime.doubleValue / 1000)
         let dateTo = Date(timeIntervalSince1970: endTime.doubleValue / 1000)
+
+        let isManualEntry = recordingMethod == RecordingMethod.manual.rawValue
+        let metadata = [
+            HKMetadataKeyWasUserEntered: NSNumber(value: isManualEntry)
+        ]
         
         let systolic_sample = HKQuantitySample(
             type: HKSampleType.quantityType(forIdentifier: .bloodPressureSystolic)!,
             quantity: HKQuantity(unit: HKUnit.millimeterOfMercury(), doubleValue: systolic),
-            start: dateFrom, end: dateTo)
+            start: dateFrom, end: dateTo, metadata: metadata)
         let diastolic_sample = HKQuantitySample(
             type: HKSampleType.quantityType(forIdentifier: .bloodPressureDiastolic)!,
             quantity: HKQuantity(unit: HKUnit.millimeterOfMercury(), doubleValue: diastolic),
-            start: dateFrom, end: dateTo)
+            start: dateFrom, end: dateTo, metadata: metadata)
         let bpCorrelationType = HKCorrelationType.correlationType(forIdentifier: .bloodPressure)!
         let bpCorrelation = Set(arrayLiteral: systolic_sample, diastolic_sample)
         let blood_pressure_sample = HKCorrelation(type: bpCorrelationType , start: dateFrom, end: dateTo, objects: bpCorrelation)
@@ -542,7 +560,8 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
               let name = (arguments["name"] as? String?),
               let startTime = (arguments["start_time"] as? NSNumber),
               let endTime = (arguments["end_time"] as? NSNumber),
-              let mealType = (arguments["meal_type"] as? String?)
+              let mealType = (arguments["meal_type"] as? String?),
+              let recordingMethod = arguments["recordingMethod"] as? Int
         else {
             throw PluginError(message: "Invalid Arguments")
         }
@@ -551,12 +570,14 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
         let dateTo = Date(timeIntervalSince1970: endTime.doubleValue / 1000)
         
         let mealTypeString = mealType ?? "UNKNOWN"
-        var metadata = ["HKFoodMeal": "\(mealTypeString)"]
+
+        let isManualEntry = recordingMethod == RecordingMethod.manual.rawValue
         
-        if(name != nil) {
+        var metadata = ["HKFoodMeal": mealTypeString, HKMetadataKeyWasUserEntered: NSNumber(value: isManualEntry)] as [String : Any]
+        if (name != nil) {
             metadata[HKMetadataKeyFoodType] = "\(name!)"
         }
-        
+
         var nutrition = Set<HKSample>()
         for (key, identifier) in NUTRITION_KEYS {
             let value = arguments[key] as? Double
@@ -615,7 +636,8 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
         guard let arguments = call.arguments as? NSDictionary,
               let flow = (arguments["value"] as? Int),
               let endTime = (arguments["endTime"] as? NSNumber),
-              let isStartOfCycle = (arguments["isStartOfCycle"] as? NSNumber)
+              let isStartOfCycle = (arguments["isStartOfCycle"] as? NSNumber),
+              let recordingMethod = (arguments["recordingMethod"] as? Int)
         else {
             throw PluginError(message: "Invalid Arguments - value, startTime, endTime or isStartOfCycle invalid")
         }
@@ -625,11 +647,13 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
         
         let dateTime = Date(timeIntervalSince1970: endTime.doubleValue / 1000)
 
+        let isManualEntry = recordingMethod == RecordingMethod.manual.rawValue
+
         guard let categoryType = HKSampleType.categoryType(forIdentifier: .menstrualFlow) else {
             throw PluginError(message: "Invalid Menstrual Flow Type")
         }
 
-        let metadata = [HKMetadataKeyMenstrualCycleStart: isStartOfCycle]
+        let metadata = [HKMetadataKeyMenstrualCycleStart: isStartOfCycle, HKMetadataKeyWasUserEntered: NSNumber(value: isManualEntry)] as [String : Any]
         
         let sample = HKCategorySample(
             type: categoryType,
@@ -743,7 +767,8 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
         let startTime = (arguments?["startTime"] as? NSNumber) ?? 0
         let endTime = (arguments?["endTime"] as? NSNumber) ?? 0
         let limit = (arguments?["limit"] as? Int) ?? HKObjectQueryNoLimit
-        let includeManualEntry = (arguments?["includeManualEntry"] as? Bool) ?? true
+        let recordingMethodsToFilter = (arguments?["recordingMethodsToFilter"] as? [Int]) ?? []
+        let includeManualEntry = !recordingMethodsToFilter.contains(RecordingMethod.manual.rawValue)
         
         // Convert dates from milliseconds to Date()
         let dateFrom = Date(timeIntervalSince1970: startTime.doubleValue / 1000)
@@ -768,7 +793,7 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
                     "date_to": Int(dateTo.timeIntervalSince1970 * 1000),
                     "source_id": sourceIdForCharacteristic,
                     "source_name": sourceNameForCharacteristic,
-                    "is_manual_entry": true
+                    "recording_method": RecordingMethod.manual.rawValue
                 ]
             ])
             return
@@ -781,7 +806,7 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
                     "date_to": Int(dateTo.timeIntervalSince1970 * 1000),
                     "source_id": sourceIdForCharacteristic,
                     "source_name": sourceNameForCharacteristic,
-                    "is_manual_entry": true
+                    "recording_method": RecordingMethod.manual.rawValue
                 ]
             ])
             return
@@ -794,7 +819,7 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
                     "date_to": Int(dateTo.timeIntervalSince1970 * 1000),
                     "source_id": sourceIdForCharacteristic,
                     "source_name": sourceNameForCharacteristic,
-                    "is_manual_entry": true
+                    "recording_method": RecordingMethod.manual.rawValue
                 ]
             ])
             return
@@ -826,7 +851,9 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
                         "date_to": Int(sample.endDate.timeIntervalSince1970 * 1000),
                         "source_id": sample.sourceRevision.source.bundleIdentifier,
                         "source_name": sample.sourceRevision.source.name,
-                        "is_manual_entry": sample.metadata?[HKMetadataKeyWasUserEntered] != nil,
+                        "recording_method": (sample.metadata?[HKMetadataKeyWasUserEntered] as? Bool == true)
+                            ? RecordingMethod.manual.rawValue
+                            : RecordingMethod.automatic.rawValue,
                         "metadata": dataTypeKey == INSULIN_DELIVERY ? sample.metadata : nil
                     ]
                 }
@@ -839,19 +866,13 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
                 if dataTypeKey == self.SLEEP_IN_BED {
                     samplesCategory = samplesCategory.filter { $0.value == 0 }
                 }
-                if dataTypeKey == self.SLEEP_ASLEEP_CORE {
-                    samplesCategory = samplesCategory.filter { $0.value == 3 }
-                }
-                if dataTypeKey == self.SLEEP_ASLEEP_DEEP {
-                    samplesCategory = samplesCategory.filter { $0.value == 4 }
-                }
-                if dataTypeKey == self.SLEEP_ASLEEP_REM {
-                    samplesCategory = samplesCategory.filter { $0.value == 5 }
+                if dataTypeKey == self.SLEEP_ASLEEP {
+                    samplesCategory = samplesCategory.filter { $0.value == 1 }
                 }
                 if dataTypeKey == self.SLEEP_AWAKE {
                     samplesCategory = samplesCategory.filter { $0.value == 2 }
                 }
-                if dataTypeKey == self.SLEEP_ASLEEP {
+                if dataTypeKey == self.SLEEP_LIGHT {
                     samplesCategory = samplesCategory.filter { $0.value == 3 }
                 }
                 if dataTypeKey == self.SLEEP_DEEP {
@@ -891,7 +912,7 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
                         "date_to": Int(sample.endDate.timeIntervalSince1970 * 1000),
                         "source_id": sample.sourceRevision.source.bundleIdentifier,
                         "source_name": sample.sourceRevision.source.name,
-                        "is_manual_entry": sample.metadata?[HKMetadataKeyWasUserEntered] != nil,
+                        "recording_method": (sample.metadata?[HKMetadataKeyWasUserEntered] as? Bool == true) ? RecordingMethod.manual.rawValue : RecordingMethod.automatic.rawValue,
                         "metadata": metadata
                     ]
                 }
@@ -915,7 +936,7 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
                         "date_to": Int(sample.endDate.timeIntervalSince1970 * 1000),
                         "source_id": sample.sourceRevision.source.bundleIdentifier,
                         "source_name": sample.sourceRevision.source.name,
-                        "is_manual_entry": sample.metadata?[HKMetadataKeyWasUserEntered] != nil,
+                        "recording_method": (sample.metadata?[HKMetadataKeyWasUserEntered] as? Bool == true) ? RecordingMethod.manual.rawValue : RecordingMethod.automatic.rawValue,
                         "workout_type": self.getWorkoutType(type: sample.workoutActivityType),
                         "total_distance": sample.totalDistance != nil ? Int(sample.totalDistance!.doubleValue(for: HKUnit.meter())) : 0,
                         "total_energy_burned": sample.totalEnergyBurned != nil ? Int(sample.totalEnergyBurned!.doubleValue(for: HKUnit.kilocalorie())) : 0
@@ -969,6 +990,9 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
                             "date_to": Int(sample.endDate.timeIntervalSince1970 * 1000),
                             "source_id": sample.sourceRevision.source.bundleIdentifier,
                             "source_name": sample.sourceRevision.source.name,
+                            "recording_method": (sample.metadata?[HKMetadataKeyWasUserEntered] as? Bool == true)
+                                ? RecordingMethod.manual.rawValue
+                                : RecordingMethod.automatic.rawValue
                         ]
                         for sample in samples {
                             if let quantitySample = sample as? HKQuantitySample {
@@ -1047,7 +1071,8 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
         let startDate = (arguments?["startTime"] as? NSNumber) ?? 0
         let endDate = (arguments?["endTime"] as? NSNumber) ?? 0
         let intervalInSecond = (arguments?["interval"] as? Int) ?? 1
-        let includeManualEntry = (arguments?["includeManualEntry"] as? Bool) ?? true
+        let recordingMethodsToFilter = (arguments?["recordingMethodsToFilter"] as? [Int]) ?? []
+        let includeManualEntry = !recordingMethodsToFilter.contains(RecordingMethod.manual.rawValue)
         
         // Set interval in seconds.
         var interval = DateComponents()
@@ -1131,7 +1156,8 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
         let arguments = call.arguments as? NSDictionary
         let startTime = (arguments?["startTime"] as? NSNumber) ?? 0
         let endTime = (arguments?["endTime"] as? NSNumber) ?? 0
-        let includeManualEntry = (arguments?["includeManualEntry"] as? Bool) ?? true
+        let recordingMethodsToFilter = (arguments?["recordingMethodsToFilter"] as? [Int]) ?? []
+        let includeManualEntry = !recordingMethodsToFilter.contains(RecordingMethod.manual.rawValue)
         
         // Convert dates from milliseconds to Date()
         let dateFrom = Date(timeIntervalSince1970: startTime.doubleValue / 1000)
@@ -1450,14 +1476,12 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
             dataTypesDict[DISTANCE_CYCLING] = HKSampleType.quantityType(forIdentifier: .distanceCycling)!
             dataTypesDict[FLIGHTS_CLIMBED] = HKSampleType.quantityType(forIdentifier: .flightsClimbed)!
             dataTypesDict[MINDFULNESS] = HKSampleType.categoryType(forIdentifier: .mindfulSession)!
-            dataTypesDict[SLEEP_IN_BED] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
-            dataTypesDict[SLEEP_ASLEEP] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
-            dataTypesDict[SLEEP_ASLEEP_CORE] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
-            dataTypesDict[SLEEP_ASLEEP_DEEP] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
-            dataTypesDict[SLEEP_ASLEEP_REM] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
             dataTypesDict[SLEEP_AWAKE] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
             dataTypesDict[SLEEP_DEEP] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
+            dataTypesDict[SLEEP_IN_BED] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
+            dataTypesDict[SLEEP_LIGHT] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
             dataTypesDict[SLEEP_REM] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
+            dataTypesDict[SLEEP_ASLEEP] = HKSampleType.categoryType(forIdentifier: .sleepAnalysis)!
             dataTypesDict[MENSTRUATION_FLOW] = HKSampleType.categoryType(forIdentifier: .menstrualFlow)!
             
             
@@ -1584,6 +1608,10 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
             workoutActivityTypeMap["PICKLEBALL"] = HKWorkoutActivityType.pickleball
             workoutActivityTypeMap["COOLDOWN"] = HKWorkoutActivityType.cooldown
         }
+
+        if #available(iOS 16.0, *) {
+            dataTypesDict[ATRIAL_FIBRILLATION_BURDEN] = HKQuantityType.quantityType(forIdentifier: .atrialFibrillationBurden)!
+        } 
         
         // Concatenate heart events, headache and health data types (both may be empty)
         allDataTypes = Set(heartRateEventTypes + healthDataTypes)
@@ -1743,5 +1771,5 @@ public class SwiftHealthPlugin: NSObject, FlutterPlugin {
         default:
             return "other"
         }
-    }
+   }
 }

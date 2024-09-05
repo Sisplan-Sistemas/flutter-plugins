@@ -8,6 +8,7 @@ part of 'health.dart';
 
 HealthDataPoint _$HealthDataPointFromJson(Map<String, dynamic> json) =>
     HealthDataPoint(
+      uuid: json['uuid'] as String,
       value: HealthValue.fromJson(json['value'] as Map<String, dynamic>),
       type: $enumDecode(_$HealthDataTypeEnumMap, json['type']),
       unit: $enumDecode(_$HealthDataUnitEnumMap, json['unit']),
@@ -18,7 +19,9 @@ HealthDataPoint _$HealthDataPointFromJson(Map<String, dynamic> json) =>
       sourceDeviceId: json['source_device_id'] as String,
       sourceId: json['source_id'] as String,
       sourceName: json['source_name'] as String,
-      isManualEntry: json['is_manual_entry'] as bool? ?? false,
+      recordingMethod: $enumDecodeNullable(
+              _$RecordingMethodEnumMap, json['recording_method']) ??
+          RecordingMethod.unknown,
       workoutSummary: json['workout_summary'] == null
           ? null
           : WorkoutSummary.fromJson(
@@ -28,6 +31,7 @@ HealthDataPoint _$HealthDataPointFromJson(Map<String, dynamic> json) =>
 
 Map<String, dynamic> _$HealthDataPointToJson(HealthDataPoint instance) {
   final val = <String, dynamic>{
+    'uuid': instance.uuid,
     'value': instance.value,
     'type': _$HealthDataTypeEnumMap[instance.type]!,
     'unit': _$HealthDataUnitEnumMap[instance.unit]!,
@@ -37,7 +41,7 @@ Map<String, dynamic> _$HealthDataPointToJson(HealthDataPoint instance) {
     'source_device_id': instance.sourceDeviceId,
     'source_id': instance.sourceId,
     'source_name': instance.sourceName,
-    'is_manual_entry': instance.isManualEntry,
+    'recording_method': _$RecordingMethodEnumMap[instance.recordingMethod]!,
   };
 
   void writeNotNull(String key, dynamic value) {
@@ -53,6 +57,7 @@ Map<String, dynamic> _$HealthDataPointToJson(HealthDataPoint instance) {
 
 const _$HealthDataTypeEnumMap = {
   HealthDataType.ACTIVE_ENERGY_BURNED: 'ACTIVE_ENERGY_BURNED',
+  HealthDataType.ATRIAL_FIBRILLATION_BURDEN: 'ATRIAL_FIBRILLATION_BURDEN',
   HealthDataType.AUDIOGRAM: 'AUDIOGRAM',
   HealthDataType.BASAL_ENERGY_BURNED: 'BASAL_ENERGY_BURNED',
   HealthDataType.BLOOD_GLUCOSE: 'BLOOD_GLUCOSE',
@@ -121,17 +126,16 @@ const _$HealthDataTypeEnumMap = {
   HealthDataType.DISTANCE_DELTA: 'DISTANCE_DELTA',
   HealthDataType.MINDFULNESS: 'MINDFULNESS',
   HealthDataType.WATER: 'WATER',
-  HealthDataType.SLEEP_IN_BED: 'SLEEP_IN_BED',
   HealthDataType.SLEEP_ASLEEP: 'SLEEP_ASLEEP',
-  HealthDataType.SLEEP_ASLEEP_CORE: 'SLEEP_ASLEEP_CORE',
-  HealthDataType.SLEEP_ASLEEP_DEEP: 'SLEEP_ASLEEP_DEEP',
-  HealthDataType.SLEEP_ASLEEP_REM: 'SLEEP_ASLEEP_REM',
+  HealthDataType.SLEEP_AWAKE_IN_BED: 'SLEEP_AWAKE_IN_BED',
   HealthDataType.SLEEP_AWAKE: 'SLEEP_AWAKE',
-  HealthDataType.SLEEP_LIGHT: 'SLEEP_LIGHT',
   HealthDataType.SLEEP_DEEP: 'SLEEP_DEEP',
-  HealthDataType.SLEEP_REM: 'SLEEP_REM',
+  HealthDataType.SLEEP_IN_BED: 'SLEEP_IN_BED',
+  HealthDataType.SLEEP_LIGHT: 'SLEEP_LIGHT',
   HealthDataType.SLEEP_OUT_OF_BED: 'SLEEP_OUT_OF_BED',
+  HealthDataType.SLEEP_REM: 'SLEEP_REM',
   HealthDataType.SLEEP_SESSION: 'SLEEP_SESSION',
+  HealthDataType.SLEEP_UNKNOWN: 'SLEEP_UNKNOWN',
   HealthDataType.EXERCISE_TIME: 'EXERCISE_TIME',
   HealthDataType.WORKOUT: 'WORKOUT',
   HealthDataType.HEADACHE_NOT_PRESENT: 'HEADACHE_NOT_PRESENT',
@@ -207,6 +211,13 @@ const _$HealthDataUnitEnumMap = {
 const _$HealthPlatformTypeEnumMap = {
   HealthPlatformType.appleHealth: 'appleHealth',
   HealthPlatformType.googleHealthConnect: 'googleHealthConnect',
+};
+
+const _$RecordingMethodEnumMap = {
+  RecordingMethod.unknown: 'unknown',
+  RecordingMethod.active: 'active',
+  RecordingMethod.automatic: 'automatic',
+  RecordingMethod.manual: 'manual',
 };
 
 HealthValue _$HealthValueFromJson(Map<String, dynamic> json) =>

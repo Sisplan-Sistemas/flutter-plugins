@@ -196,10 +196,11 @@ class Health {
                 type == HealthDataType.HIGH_HEART_RATE_EVENT ||
                 type == HealthDataType.LOW_HEART_RATE_EVENT ||
                 type == HealthDataType.IRREGULAR_HEART_RATE_EVENT ||
-                type == HealthDataType.WALKING_HEART_RATE) &&
+                type == HealthDataType.WALKING_HEART_RATE ||
+                type == HealthDataType.ATRIAL_FIBRILLATION_BURDEN) &&
             permission != HealthDataAccess.READ) {
           throw ArgumentError(
-              'Requesting WRITE permission on ELECTROCARDIOGRAM / HIGH_HEART_RATE_EVENT / LOW_HEART_RATE_EVENT / IRREGULAR_HEART_RATE_EVENT / WALKING_HEART_RATE is not allowed.');
+              'Requesting WRITE permission on ELECTROCARDIOGRAM / HIGH_HEART_RATE_EVENT / LOW_HEART_RATE_EVENT / IRREGULAR_HEART_RATE_EVENT / WALKING_HEART_RATE / ATRIAL_FIBRILLATION_BURDEN is not allowed.');
         }
       }
     }
@@ -241,17 +242,17 @@ class Health {
   Future<List<HealthDataPoint>> _computeAndroidBMI(
     DateTime startTime,
     DateTime endTime,
-    bool includeManualEntry,
+    List<RecordingMethod> recordingMethodsToFilter,
   ) async {
     List<HealthDataPoint> heights = await _prepareQuery(
-        startTime, endTime, HealthDataType.HEIGHT, includeManualEntry);
+        startTime, endTime, HealthDataType.HEIGHT, recordingMethodsToFilter);
 
     if (heights.isEmpty) {
       return [];
     }
 
     List<HealthDataPoint> weights = await _prepareQuery(
-        startTime, endTime, HealthDataType.WEIGHT, includeManualEntry);
+        startTime, endTime, HealthDataType.WEIGHT, recordingMethodsToFilter);
 
     double h =
         (heights.last.value as NumericHealthValue).numericValue.toDouble();
@@ -265,6 +266,7 @@ class Health {
           (weights[i].value as NumericHealthValue).numericValue.toDouble() /
               (h * h);
       final x = HealthDataPoint(
+        uuid: '',
         value: NumericHealthValue(numericValue: bmiValue),
         type: dataType,
         unit: unit,
@@ -274,7 +276,7 @@ class Health {
         sourceDeviceId: _deviceId!,
         sourceId: '',
         sourceName: '',
-        isManualEntry: !includeManualEntry,
+        recordingMethod: RecordingMethod.unknown,
       );
 
       bmiHealthPoints.add(x);
@@ -296,6 +298,8 @@ class Health {
   ///    It must be equal to or later than [startTime].
   ///    Simply set [endTime] equal to [startTime] if the [value] is measured
   ///    only at a specific point in time (default).
+  ///  * [recordingMethod] - the recording method of the data point, automatic by default.
+  ///    (on iOS this must be manual or automatic)
   ///
   /// Values for Sleep and Headache are ignored and will be automatically assigned
   /// the default value.
@@ -305,7 +309,14 @@ class Health {
     required HealthDataType type,
     required DateTime startTime,
     DateTime? endTime,
+    RecordingMethod recordingMethod = RecordingMethod.automatic,
   }) async {
+    if (Platform.isIOS &&
+        [RecordingMethod.active, RecordingMethod.unknown]
+            .contains(recordingMethod)) {
+      throw ArgumentError("recordingMethod must be manual or automatic on iOS");
+    }
+
     if (type == HealthDataType.WORKOUT) {
       throw ArgumentError(
           "Adding workouts should be done using the writeWorkoutData method.");
@@ -339,9 +350,7 @@ class Health {
         type == HealthDataType.SLEEP_IN_BED ||
         type == HealthDataType.SLEEP_DEEP ||
         type == HealthDataType.SLEEP_REM ||
-        type == HealthDataType.SLEEP_ASLEEP_CORE ||
-        type == HealthDataType.SLEEP_ASLEEP_DEEP ||
-        type == HealthDataType.SLEEP_ASLEEP_REM ||
+        type == HealthDataType.SLEEP_LIGHT ||
         type == HealthDataType.HEADACHE_NOT_PRESENT ||
         type == HealthDataType.HEADACHE_MILD ||
         type == HealthDataType.HEADACHE_MODERATE ||
@@ -355,7 +364,8 @@ class Health {
       'dataTypeKey': type.name,
       'dataUnitKey': unit.name,
       'startTime': startTime.millisecondsSinceEpoch,
-      'endTime': endTime.millisecondsSinceEpoch
+      'endTime': endTime.millisecondsSinceEpoch,
+      'recordingMethod': recordingMethod.toInt(),
     };
     bool? success = await _channel.invokeMethod('writeData', args);
     return success ?? false;
@@ -403,12 +413,20 @@ class Health {
   ///    Must be equal to or later than [startTime].
   ///    Simply set [endTime] equal to [startTime] if the blood pressure is measured
   ///    only at a specific point in time. If omitted, [endTime] is set to [startTime].
+  ///  * [recordingMethod] - the recording method of the data point.
   Future<bool> writeBloodPressure({
     required int systolic,
     required int diastolic,
     required DateTime startTime,
     DateTime? endTime,
+    RecordingMethod recordingMethod = RecordingMethod.automatic,
   }) async {
+    if (Platform.isIOS &&
+        [RecordingMethod.active, RecordingMethod.unknown]
+            .contains(recordingMethod)) {
+      throw ArgumentError("recordingMethod must be manual or automatic on iOS");
+    }
+
     endTime ??= startTime;
     if (startTime.isAfter(endTime)) {
       throw ArgumentError("startTime must be equal or earlier than endTime");
@@ -418,7 +436,8 @@ class Health {
       'systolic': systolic,
       'diastolic': diastolic,
       'startTime': startTime.millisecondsSinceEpoch,
-      'endTime': endTime.millisecondsSinceEpoch
+      'endTime': endTime.millisecondsSinceEpoch,
+      'recordingMethod': recordingMethod.toInt(),
     };
     return await _channel.invokeMethod('writeBloodPressure', args) == true;
   }
@@ -435,11 +454,19 @@ class Health {
   ///    Must be equal to or later than [startTime].
   ///    Simply set [endTime] equal to [startTime] if the blood oxygen saturation
   ///    is measured only at a specific point in time (default).
+  ///  * [recordingMethod] - the recording method of the data point.
   Future<bool> writeBloodOxygen({
     required double saturation,
     required DateTime startTime,
     DateTime? endTime,
+    RecordingMethod recordingMethod = RecordingMethod.automatic,
   }) async {
+    if (Platform.isIOS &&
+        [RecordingMethod.active, RecordingMethod.unknown]
+            .contains(recordingMethod)) {
+      throw ArgumentError("recordingMethod must be manual or automatic on iOS");
+    }
+
     endTime ??= startTime;
     if (startTime.isAfter(endTime)) {
       throw ArgumentError("startTime must be equal or earlier than endTime");
@@ -451,13 +478,15 @@ class Health {
           value: saturation,
           type: HealthDataType.BLOOD_OXYGEN,
           startTime: startTime,
-          endTime: endTime);
+          endTime: endTime,
+          recordingMethod: recordingMethod);
     } else if (Platform.isAndroid) {
       Map<String, dynamic> args = {
         'value': saturation,
         'startTime': startTime.millisecondsSinceEpoch,
         'endTime': endTime.millisecondsSinceEpoch,
         'dataTypeKey': HealthDataType.BLOOD_OXYGEN.name,
+        'recordingMethod': recordingMethod.toInt(),
       };
       success = await _channel.invokeMethod('writeBloodOxygen', args);
     }
@@ -516,6 +545,7 @@ class Health {
   ///  * [sugar] - optional sugar information.
   ///  * [water] - optional water information.
   ///  * [zinc] - optional zinc information.
+  ///  * [recordingMethod] - the recording method of the data point.
   Future<bool> writeMeal({
     required MealType mealType,
     required DateTime startTime,
@@ -562,7 +592,14 @@ class Health {
     double? sugar,
     double? water,
     double? zinc,
+    RecordingMethod recordingMethod = RecordingMethod.automatic,
   }) async {
+    if (Platform.isIOS &&
+        [RecordingMethod.active, RecordingMethod.unknown]
+            .contains(recordingMethod)) {
+      throw ArgumentError("recordingMethod must be manual or automatic on iOS");
+    }
+
     if (startTime.isAfter(endTime)) {
       throw ArgumentError("startTime must be equal or earlier than endTime");
     }
@@ -613,6 +650,7 @@ class Health {
       'sugar': sugar,
       'water': water,
       'zinc': zinc,
+      'recordingMethod': recordingMethod.toInt(),
     };
     bool? success = await _channel.invokeMethod('writeMeal', args);
     return success ?? false;
@@ -628,12 +666,20 @@ class Health {
   ///  * [endTime] - the start time when the menstrual flow is measured.
   ///  * [isStartOfCycle] - A bool that indicates whether the sample represents
   ///    the start of a menstrual cycle.
+  ///  * [recordingMethod] - the recording method of the data point.
   Future<bool> writeMenstruationFlow({
     required MenstrualFlow flow,
     required DateTime startTime,
     required DateTime endTime,
     required bool isStartOfCycle,
+    RecordingMethod recordingMethod = RecordingMethod.automatic,
   }) async {
+    if (Platform.isIOS &&
+        [RecordingMethod.active, RecordingMethod.unknown]
+            .contains(recordingMethod)) {
+      throw ArgumentError("recordingMethod must be manual or automatic on iOS");
+    }
+
     var value =
         Platform.isAndroid ? MenstrualFlow.toHealthConnect(flow) : flow.index;
 
@@ -648,6 +694,7 @@ class Health {
       'endTime': endTime.millisecondsSinceEpoch,
       'isStartOfCycle': isStartOfCycle,
       'dataTypeKey': HealthDataType.MENSTRUATION_FLOW.name,
+      'recordingMethod': recordingMethod.toInt(),
     };
     return await _channel.invokeMethod('writeMenstruationFlow', args) == true;
   }
@@ -749,17 +796,19 @@ class Health {
   }
 
   /// Fetch a list of health data points based on [types].
+  /// You can also specify the [recordingMethodsToFilter] to filter the data points.
+  /// If not specified, all data points will be included.
   Future<List<HealthDataPoint>> getHealthDataFromTypes({
     required List<HealthDataType> types,
     required DateTime startTime,
     required DateTime endTime,
-    bool includeManualEntry = true,
+    List<RecordingMethod> recordingMethodsToFilter = const [],
   }) async {
     List<HealthDataPoint> dataPoints = [];
 
     for (var type in types) {
-      final result =
-          await _prepareQuery(startTime, endTime, type, includeManualEntry);
+      final result = await _prepareQuery(
+          startTime, endTime, type, recordingMethodsToFilter);
       dataPoints.addAll(result);
     }
 
@@ -772,17 +821,19 @@ class Health {
   }
 
   /// Fetch a list of health data points based on [types].
+  /// You can also specify the [recordingMethodsToFilter] to filter the data points.
+  /// If not specified, all data points will be included.Vkk
   Future<List<HealthDataPoint>> getHealthIntervalDataFromTypes(
       {required DateTime startDate,
       required DateTime endDate,
       required List<HealthDataType> types,
       required int interval,
-      bool includeManualEntry = true}) async {
+      List<RecordingMethod> recordingMethodsToFilter = const []}) async {
     List<HealthDataPoint> dataPoints = [];
 
     for (var type in types) {
       final result = await _prepareIntervalQuery(
-          startDate, endDate, type, interval, includeManualEntry);
+          startDate, endDate, type, interval, recordingMethodsToFilter);
       dataPoints.addAll(result);
     }
 
@@ -811,7 +862,7 @@ class Health {
     DateTime startTime,
     DateTime endTime,
     HealthDataType dataType,
-    bool includeManualEntry,
+    List<RecordingMethod> recordingMethodsToFilter,
   ) async {
     // Ask for device ID only once
     _deviceId ??= Platform.isAndroid
@@ -826,9 +877,10 @@ class Health {
 
     // If BodyMassIndex is requested on Android, calculate this manually
     if (dataType == HealthDataType.BODY_MASS_INDEX && Platform.isAndroid) {
-      return _computeAndroidBMI(startTime, endTime, includeManualEntry);
+      return _computeAndroidBMI(startTime, endTime, recordingMethodsToFilter);
     }
-    return await _dataQuery(startTime, endTime, dataType, includeManualEntry);
+    return await _dataQuery(
+        startTime, endTime, dataType, recordingMethodsToFilter);
   }
 
   /// Prepares an interval query, i.e. checks if the types are available, etc.
@@ -837,7 +889,7 @@ class Health {
       DateTime endDate,
       HealthDataType dataType,
       int interval,
-      bool includeManualEntry) async {
+      List<RecordingMethod> recordingMethodsToFilter) async {
     // Ask for device ID only once
     _deviceId ??= Platform.isAndroid
         ? (await _deviceInfo.androidInfo).id
@@ -850,7 +902,7 @@ class Health {
     }
 
     return await _dataIntervalQuery(
-        startDate, endDate, dataType, interval, includeManualEntry);
+        startDate, endDate, dataType, interval, recordingMethodsToFilter);
   }
 
   /// Prepares an aggregate query, i.e. checks if the types are available, etc.
@@ -877,14 +929,18 @@ class Health {
   }
 
   /// Fetches data points from Android/iOS native code.
-  Future<List<HealthDataPoint>> _dataQuery(DateTime startTime, DateTime endTime,
-      HealthDataType dataType, bool includeManualEntry) async {
+  Future<List<HealthDataPoint>> _dataQuery(
+      DateTime startTime,
+      DateTime endTime,
+      HealthDataType dataType,
+      List<RecordingMethod> recordingMethodsToFilter) async {
     final args = <String, dynamic>{
       'dataTypeKey': dataType.name,
       'dataUnitKey': dataTypeToUnit[dataType]!.name,
       'startTime': startTime.millisecondsSinceEpoch,
       'endTime': endTime.millisecondsSinceEpoch,
-      'includeManualEntry': includeManualEntry
+      'recordingMethodsToFilter':
+          recordingMethodsToFilter.map((e) => e.toInt()).toList(),
     };
     final fetchedDataPoints = await _channel.invokeMethod('getData', args);
 
@@ -911,14 +967,15 @@ class Health {
       DateTime endDate,
       HealthDataType dataType,
       int interval,
-      bool includeManualEntry) async {
+      List<RecordingMethod> recordingMethodsToFilter) async {
     final args = <String, dynamic>{
       'dataTypeKey': dataType.name,
       'dataUnitKey': dataTypeToUnit[dataType]!.name,
       'startTime': startDate.millisecondsSinceEpoch,
       'endTime': endDate.millisecondsSinceEpoch,
       'interval': interval,
-      'includeManualEntry': includeManualEntry
+      'recordingMethodsToFilter':
+          recordingMethodsToFilter.map((e) => e.toInt()).toList(),
     };
 
     final fetchedDataPoints =
@@ -982,7 +1039,9 @@ class Health {
     final args = <String, dynamic>{
       'startTime': startTime.millisecondsSinceEpoch,
       'endTime': endTime.millisecondsSinceEpoch,
-      'includeManualEntry': includeManualEntry
+      'recordingMethodsToFilter': includeManualEntry
+          ? <RecordingMethod>[]
+          : [RecordingMethod.manual.toInt()],
     };
     final stepsCount = await _channel.invokeMethod<int?>(
       'getTotalStepsInInterval',
@@ -994,13 +1053,11 @@ class Health {
   /// Assigns numbers to specific [HealthDataType]s.
   int _alignValue(HealthDataType type) => switch (type) {
         HealthDataType.SLEEP_IN_BED => 0,
+        HealthDataType.SLEEP_ASLEEP => 1,
         HealthDataType.SLEEP_AWAKE => 2,
         HealthDataType.SLEEP_ASLEEP => 3,
         HealthDataType.SLEEP_DEEP => 4,
         HealthDataType.SLEEP_REM => 5,
-        HealthDataType.SLEEP_ASLEEP_CORE => 3,
-        HealthDataType.SLEEP_ASLEEP_DEEP => 4,
-        HealthDataType.SLEEP_ASLEEP_REM => 5,
         HealthDataType.HEADACHE_UNSPECIFIED => 0,
         HealthDataType.HEADACHE_NOT_PRESENT => 1,
         HealthDataType.HEADACHE_MILD => 2,
@@ -1026,6 +1083,7 @@ class Health {
   ///    *ONLY FOR IOS* Default value is METER.
   ///  - [title] The title of the workout.
   ///    *ONLY FOR HEALTH CONNECT* Default value is the [activityType], e.g. "STRENGTH_TRAINING".
+  ///  - [recordingMethod] The recording method of the data point, automatic by default (on iOS this can only be automatic or manual).
   Future<bool> writeWorkoutData({
     required HealthWorkoutActivityType activityType,
     required DateTime start,
@@ -1035,7 +1093,14 @@ class Health {
     int? totalDistance,
     HealthDataUnit totalDistanceUnit = HealthDataUnit.METER,
     String? title,
+    RecordingMethod recordingMethod = RecordingMethod.automatic,
   }) async {
+    if (Platform.isIOS &&
+        [RecordingMethod.active, RecordingMethod.unknown]
+            .contains(recordingMethod)) {
+      throw ArgumentError("recordingMethod must be manual or automatic on iOS");
+    }
+
     // Check that value is on the current Platform
     if (Platform.isIOS && !_isOnIOS(activityType)) {
       throw HealthException(activityType,
@@ -1053,6 +1118,7 @@ class Health {
       'totalDistance': totalDistance,
       'totalDistanceUnit': totalDistanceUnit.name,
       'title': title,
+      'recordingMethod': recordingMethod.toInt(),
     };
     return await _channel.invokeMethod('writeWorkoutData', args) == true;
   }

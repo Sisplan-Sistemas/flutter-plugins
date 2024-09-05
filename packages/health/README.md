@@ -181,6 +181,11 @@ Below is a simplified flow of how to use the plugin.
   bool success = await Health().writeHealthData(10, HealthDataType.STEPS, now, now);
   success = await Health().writeHealthData(3.1, HealthDataType.BLOOD_GLUCOSE, now, now);
 
+  // you can also specify the recording method to store in the metadata (default is RecordingMethod.automatic)
+  // on iOS only `RecordingMethod.automatic` and `RecordingMethod.manual` are supported
+  // Android additionally supports `RecordingMethod.active` and `RecordingMethod.unknown`
+  success &= await Health().writeHealthData(10, HealthDataType.STEPS, now, now, recordingMethod: RecordingMethod.manual);
+
   // get the number of steps for today
   var midnight = DateTime(now.year, now.month, now.day);
   int? steps = await Health().getTotalStepsInInterval(midnight, now);
@@ -191,6 +196,7 @@ Below is a simplified flow of how to use the plugin.
 A [`HealthDataPoint`](https://pub.dev/documentation/health/latest/health/HealthDataPoint-class.html) object contains the following data fields:
 
 ```dart
+String uuid;
 HealthValue value;
 HealthDataType type;
 HealthDataUnit unit;
@@ -200,7 +206,7 @@ HealthPlatformType sourcePlatform;
 String sourceDeviceId;
 String sourceId;
 String sourceName;
-bool isManualEntry;
+RecordingMethod recordingMethod;
 WorkoutSummary? workoutSummary;
 ```
 
@@ -222,7 +228,7 @@ A `HealthDataPoint` object can be serialized to and from JSON using the `toJson(
   "source_device_id": "F74938B9-C011-4DE4-AA5E-CF41B60B96E7",
   "source_id": "com.apple.health.81AE7156-EC05-47E3-AC93-2D6F65C717DF",
   "source_name": "iPhone12.bardram.net",
-  "is_manual_entry": false
+  "recording_method": 3
   "value": {
     "__type": "NumericHealthValue",
     "numeric_value": 141.0
@@ -235,7 +241,7 @@ A `HealthDataPoint` object can be serialized to and from JSON using the `toJson(
   "source_device_id": "F74938B9-C011-4DE4-AA5E-CF41B60B96E7",
   "source_id": "com.apple.health.81AE7156-EC05-47E3-AC93-2D6F65C717DF",
   "source_name": "iPhone12.bardram.net",
-  "is_manual_entry": false
+  "recording_method": 2
 }
 ```
 
@@ -249,6 +255,28 @@ See the example app for a showcasing of how it's done.
 flutter: Health Plugin Error:
 flutter:  PlatformException(FlutterHealth, Results are null, Optional(Error Domain=com.apple.healthkit Code=6 "Protected health data is inaccessible" UserInfo={NSLocalizedDescription=Protected health data is inaccessible}))
 ```
+
+### Filtering by recording method
+
+Google Health Connect and Apple HealthKit both provide ways to distinguish samples collected "automatically" and manually entered data by the user.
+
+- Android provides an enum with 4 variations: https://developer.android.com/reference/kotlin/androidx/health/connect/client/records/metadata/Metadata#summary
+- iOS has a boolean value: https://developer.apple.com/documentation/healthkit/hkmetadatakeywasuserentered
+
+As such, when fetching data you have the option to filter the fetched data by recording method as such:
+
+```dart
+List<HealthDataPoint> healthData = await Health().getHealthDataFromTypes(
+  types: types,
+  startTime: yesterday,
+  endTime: now,
+  recordingMethodsToFilter: [RecordingMethod.manual, RecordingMethod.unknown],
+);
+```
+
+**Note that for this to work, the information needs to have been provided when writing the data to Health Connect or Apple Health**. For example, steps added manually through the Apple Health App will set `HKWasUserEntered` to true (corresponding to `RecordingMethod.manual`), however it seems that adding steps manually to Google Fit does not write the data with the `RecordingMethod.manual` in the metadata, instead it shows up as `RecordingMethod.unknown`. This is an open issue, and as such filtering manual entries when querying step count on Android with `getTotalStepsInInterval(includeManualEntries: false)` does not necessarily filter out manual steps.
+
+**NOTE**: On iOS, you can only filter by `RecordingMethod.automatic` and `RecordingMethod.manual` as it is stored `HKMetadataKeyWasUserEntered` is a boolean value in the metadata.
 
 ### Filtering out duplicates
 
@@ -273,57 +301,60 @@ points = Health().removeDuplicates(points);
 
 The plugin supports the following [`HealthDataType`](https://pub.dev/documentation/health/latest/health/HealthDataType.html).
 
-| **Data Type**                | **Unit**                | **Apple Health** | **Google Health Connect** | **Comments**                           |
-| ---------------------------- | ----------------------- | ---------------- | ------------------------- | -------------------------------------- |
-| ACTIVE_ENERGY_BURNED         | CALORIES                | yes              | yes                       |                                        |
-| BASAL_ENERGY_BURNED          | CALORIES                | yes              | yes                       |                                        |
-| BLOOD_GLUCOSE                | MILLIGRAM_PER_DECILITER | yes              | yes                       |                                        |
-| BLOOD_OXYGEN                 | PERCENTAGE              | yes              | yes                       |                                        |
-| BLOOD_PRESSURE_DIASTOLIC     | MILLIMETER_OF_MERCURY   | yes              | yes                       |                                        |
-| BLOOD_PRESSURE_SYSTOLIC      | MILLIMETER_OF_MERCURY   | yes              | yes                       |                                        |
-| BODY_FAT_PERCENTAGE          | PERCENTAGE              | yes              | yes                       |                                        |
-| BODY_MASS_INDEX              | NO_UNIT                 | yes              | yes                       |                                        |
-| BODY_TEMPERATURE             | DEGREE_CELSIUS          | yes              | yes                       |                                        |
-| BODY_WATER_MASS              | KILOGRAMS               |                  | yes                       |                                        |
-| ELECTRODERMAL_ACTIVITY       | SIEMENS                 | yes              |                           |                                        |
-| HEART_RATE                   | BEATS_PER_MINUTE        | yes              | yes                       |                                        |
-| HEIGHT                       | METERS                  | yes              | yes                       |                                        |
-| RESTING_HEART_RATE           | BEATS_PER_MINUTE        | yes              | yes                       |                                        |
-| RESPIRATORY_RATE             | RESPIRATIONS_PER_MINUTE | yes              | yes                       |                                        |
-| PERIPHERAL_PERFUSION_INDEX   | PERCENTAGE              | yes              |                           |                                        |
-| STEPS                        | COUNT                   | yes              | yes                       |                                        |
-| WAIST_CIRCUMFERENCE          | METERS                  | yes              |                           |                                        |
-| WALKING_HEART_RATE           | BEATS_PER_MINUTE        | yes              |                           |                                        |
-| WEIGHT                       | KILOGRAMS               | yes              | yes                       |                                        |
-| DISTANCE_WALKING_RUNNING     | METERS                  | yes              |                           |                                        |
-| FLIGHTS_CLIMBED              | COUNT                   | yes              | yes                       |                                        |
-| DISTANCE_DELTA               | METERS                  |                  | yes                       |                                        |
-| MINDFULNESS                  | MINUTES                 | yes              |                           |                                        |
-| SLEEP_IN_BED                 | MINUTES                 | yes              |                           |                                        |
-| SLEEP_ASLEEP                 | MINUTES                 | yes              | yes                       |                                        |
-| SLEEP_AWAKE                  | MINUTES                 | yes              | yes                       |                                        |
-| SLEEP_DEEP                   | MINUTES                 | yes              | yes                       |                                        |
-| SLEEP_LIGHT                  | MINUTES                 |                  | yes                       |                                        |
-| SLEEP_REM                    | MINUTES                 | yes              | yes                       |                                        |
-| SLEEP_OUT_OF_BED             | MINUTES                 |                  | yes                       |                                        |
-| SLEEP_SESSION                | MINUTES                 |                  | yes                       |                                        |
-| WATER                        | LITER                   | yes              | yes                       |                                        |
-| EXERCISE_TIME                | MINUTES                 | yes              |                           |                                        |
-| WORKOUT                      | NO_UNIT                 | yes              | yes                       | See table below                        |
-| HIGH_HEART_RATE_EVENT        | NO_UNIT                 | yes              |                           | Requires Apple Watch to write the data |
-| LOW_HEART_RATE_EVENT         | NO_UNIT                 | yes              |                           | Requires Apple Watch to write the data |
-| IRREGULAR_HEART_RATE_EVENT   | NO_UNIT                 | yes              |                           | Requires Apple Watch to write the data |
-| HEART_RATE_VARIABILITY_RMSSD | MILLISECONDS            |                  | yes                       |                                        |
-| HEART_RATE_VARIABILITY_SDNN  | MILLISECONDS            | yes              |                           | Requires Apple Watch to write the data |
-| HEADACHE_NOT_PRESENT         | MINUTES                 | yes              |                           |                                        |
-| HEADACHE_MILD                | MINUTES                 | yes              |                           |                                        |
-| HEADACHE_MODERATE            | MINUTES                 | yes              |                           |                                        |
-| HEADACHE_SEVERE              | MINUTES                 | yes              |                           |                                        |
-| HEADACHE_UNSPECIFIED         | MINUTES                 | yes              |                           |                                        |
-| AUDIOGRAM                    | DECIBEL_HEARING_LEVEL   | yes              |                           |                                        |
-| ELECTROCARDIOGRAM            | VOLT                    | yes              |                           | Requires Apple Watch to write the data |
-| NUTRITION                    | NO_UNIT                 | yes              | yes                       |                                        |
-| INSULIN_DELIVERY             | INTERNATIONAL_UNIT      | yes              |                           |                                        |
+| **Data Type**                | **Unit**                | **Apple Health** | **Google Health Connect** | **Comments**                                                                                                                       |
+| ---------------------------- | ----------------------- | ---------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| ACTIVE_ENERGY_BURNED         | CALORIES                | yes              | yes                       |                                                                                                                                    |
+| ATRIAL_FIBRILLATION_BURDEN   | PERCENTAGE              | yes              |                           |                                                                                                                                    |
+| BASAL_ENERGY_BURNED          | CALORIES                | yes              | yes                       |                                                                                                                                    |
+| BLOOD_GLUCOSE                | MILLIGRAM_PER_DECILITER | yes              | yes                       |                                                                                                                                    |
+| BLOOD_OXYGEN                 | PERCENTAGE              | yes              | yes                       |                                                                                                                                    |
+| BLOOD_PRESSURE_DIASTOLIC     | MILLIMETER_OF_MERCURY   | yes              | yes                       |                                                                                                                                    |
+| BLOOD_PRESSURE_SYSTOLIC      | MILLIMETER_OF_MERCURY   | yes              | yes                       |                                                                                                                                    |
+| BODY_FAT_PERCENTAGE          | PERCENTAGE              | yes              | yes                       |                                                                                                                                    |
+| BODY_MASS_INDEX              | NO_UNIT                 | yes              | yes                       |                                                                                                                                    |
+| BODY_TEMPERATURE             | DEGREE_CELSIUS          | yes              | yes                       |                                                                                                                                    |
+| BODY_WATER_MASS              | KILOGRAMS               |                  | yes                       |                                                                                                                                    |
+| ELECTRODERMAL_ACTIVITY       | SIEMENS                 | yes              |                           |                                                                                                                                    |
+| HEART_RATE                   | BEATS_PER_MINUTE        | yes              | yes                       |                                                                                                                                    |
+| HEIGHT                       | METERS                  | yes              | yes                       |                                                                                                                                    |
+| RESTING_HEART_RATE           | BEATS_PER_MINUTE        | yes              | yes                       |                                                                                                                                    |
+| RESPIRATORY_RATE             | RESPIRATIONS_PER_MINUTE | yes              | yes                       |                                                                                                                                    |
+| PERIPHERAL_PERFUSION_INDEX   | PERCENTAGE              | yes              |                           |                                                                                                                                    |
+| STEPS                        | COUNT                   | yes              | yes                       |                                                                                                                                    |
+| WAIST_CIRCUMFERENCE          | METERS                  | yes              |                           |                                                                                                                                    |
+| WALKING_HEART_RATE           | BEATS_PER_MINUTE        | yes              |                           |                                                                                                                                    |
+| WEIGHT                       | KILOGRAMS               | yes              | yes                       |                                                                                                                                    |
+| DISTANCE_WALKING_RUNNING     | METERS                  | yes              |                           |                                                                                                                                    |
+| FLIGHTS_CLIMBED              | COUNT                   | yes              | yes                       |                                                                                                                                    |
+| DISTANCE_DELTA               | METERS                  |                  | yes                       |                                                                                                                                    |
+| MINDFULNESS                  | MINUTES                 | yes              |                           |                                                                                                                                    |
+| SLEEP_ASLEEP                 | MINUTES                 | yes              | yes                       | on iOS, this refers to asleepUnspecified, and on Android this refers to STAGE_TYPE_SLEEPING (asleep but specific stage is unknown) |
+| SLEEP_AWAKE                  | MINUTES                 | yes              | yes                       |                                                                                                                                    |
+| SLEEP_AWAKE_IN_BED           | MINUTES                 |                  | yes                       |                                                                                                                                    |
+| SLEEP_DEEP                   | MINUTES                 | yes              | yes                       |                                                                                                                                    |
+| SLEEP_IN_BED                 | MINUTES                 | yes              |                           |                                                                                                                                    |
+| SLEEP_LIGHT                  | MINUTES                 | yes              | yes                       | on iOS, this refers to asleepCore                                                                                                  |
+| SLEEP_OUT_OF_BED             | MINUTES                 |                  | yes                       |                                                                                                                                    |
+| SLEEP_REM                    | MINUTES                 | yes              | yes                       |                                                                                                                                    |
+| SLEEP_UNKNOWN                | MINUTES                 |                  | yes                       |                                                                                                                                    |
+| SLEEP_SESSION                | MINUTES                 |                  | yes                       |                                                                                                                                    |
+| WATER                        | LITER                   | yes              | yes                       |                                                                                                                                    |
+| EXERCISE_TIME                | MINUTES                 | yes              |                           |                                                                                                                                    |
+| WORKOUT                      | NO_UNIT                 | yes              | yes                       | See table below                                                                                                                    |
+| HIGH_HEART_RATE_EVENT        | NO_UNIT                 | yes              |                           | Requires Apple Watch to write the data                                                                                             |
+| LOW_HEART_RATE_EVENT         | NO_UNIT                 | yes              |                           | Requires Apple Watch to write the data                                                                                             |
+| IRREGULAR_HEART_RATE_EVENT   | NO_UNIT                 | yes              |                           | Requires Apple Watch to write the data                                                                                             |
+| HEART_RATE_VARIABILITY_RMSSD | MILLISECONDS            |                  | yes                       |                                                                                                                                    |
+| HEART_RATE_VARIABILITY_SDNN  | MILLISECONDS            | yes              |                           | Requires Apple Watch to write the data                                                                                             |
+| HEADACHE_NOT_PRESENT         | MINUTES                 | yes              |                           |                                                                                                                                    |
+| HEADACHE_MILD                | MINUTES                 | yes              |                           |                                                                                                                                    |
+| HEADACHE_MODERATE            | MINUTES                 | yes              |                           |                                                                                                                                    |
+| HEADACHE_SEVERE              | MINUTES                 | yes              |                           |                                                                                                                                    |
+| HEADACHE_UNSPECIFIED         | MINUTES                 | yes              |                           |                                                                                                                                    |
+| AUDIOGRAM                    | DECIBEL_HEARING_LEVEL   | yes              |                           |                                                                                                                                    |
+| ELECTROCARDIOGRAM            | VOLT                    | yes              |                           | Requires Apple Watch to write the data                                                                                             |
+| NUTRITION                    | NO_UNIT                 | yes              | yes                       |                                                                                                                                    |
+| INSULIN_DELIVERY             | INTERNATIONAL_UNIT      | yes              |                           |                                                                                                                                    |
 
 ## Workout Types
 

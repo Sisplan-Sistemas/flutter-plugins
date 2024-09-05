@@ -18,6 +18,7 @@ import androidx.health.connect.client.records.MealType.MEAL_TYPE_DINNER
 import androidx.health.connect.client.records.MealType.MEAL_TYPE_LUNCH
 import androidx.health.connect.client.records.MealType.MEAL_TYPE_SNACK
 import androidx.health.connect.client.records.MealType.MEAL_TYPE_UNKNOWN
+import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.request.AggregateGroupByDurationRequest
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
@@ -31,7 +32,6 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry.ActivityResultListener
-import io.flutter.plugin.common.PluginRegistry.Registrar
 import java.time.*
 import java.time.temporal.ChronoUnit
 import java.util.*
@@ -69,12 +69,14 @@ const val MEAL_UNKNOWN = "UNKNOWN"
 const val NUTRITION = "NUTRITION"
 const val SLEEP_ASLEEP = "SLEEP_ASLEEP"
 const val SLEEP_AWAKE = "SLEEP_AWAKE"
+const val SLEEP_AWAKE_IN_BED = "SLEEP_AWAKE_IN_BED"
 const val SLEEP_DEEP = "SLEEP_DEEP"
 const val SLEEP_IN_BED = "SLEEP_IN_BED"
 const val SLEEP_LIGHT = "SLEEP_LIGHT"
 const val SLEEP_OUT_OF_BED = "SLEEP_OUT_OF_BED"
 const val SLEEP_REM = "SLEEP_REM"
 const val SLEEP_SESSION = "SLEEP_SESSION"
+const val SLEEP_UNKNOWN = "SLEEP_UNKNOWN"
 const val SNACK = "SNACK"
 const val WORKOUT = "WORKOUT"
 
@@ -116,28 +118,6 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
         activity = null
         threadPoolExecutor!!.shutdown()
         threadPoolExecutor = null
-    }
-
-    // This static function is optional and equivalent to onAttachedToEngine. It supports the
-    // old
-    // pre-Flutter-1.12 Android projects. You are encouraged to continue supporting
-    // plugin registration via this function while apps migrate to use the new Android APIs
-    // post-flutter-1.12 via https://flutter.dev/go/android-project-migration.
-    //
-    // It is encouraged to share logic between onAttachedToEngine and registerWith to keep
-    // them functionally equivalent. Only one of onAttachedToEngine or registerWith will be
-    // called
-    // depending on the user's project. onAttachedToEngine or registerWith must both be defined
-    // in the same class.
-    companion object {
-        @Suppress("unused")
-        @JvmStatic
-        fun registerWith(registrar: Registrar) {
-            val channel = MethodChannel(registrar.messenger(), CHANNEL_NAME)
-            val plugin = HealthPlugin(channel)
-            registrar.addActivityResultListener(plugin)
-            channel.setMethodCallHandler(plugin)
-        }
     }
 
     override fun success(p0: Any?) {
@@ -414,17 +394,26 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
     private fun getTotalStepsInInterval(call: MethodCall, result: Result) {
         val start = call.argument<Long>("startTime")!!
         val end = call.argument<Long>("endTime")!!
+        val recordingMethodsToFilter = call.argument<List<Int>>("recordingMethodsToFilter")!!
 
+        if (recordingMethodsToFilter.isEmpty()) {
+            getAggregatedStepCount(start, end, result)
+        } else {
+            getStepCountFiltered(start, end, recordingMethodsToFilter, result)
+        }
+    }
+
+    private fun getAggregatedStepCount(start: Long, end: Long, result: Result) {
+        val startInstant = Instant.ofEpochMilli(start)
+        val endInstant = Instant.ofEpochMilli(end)
         scope.launch {
             try {
-                val startInstant = Instant.ofEpochMilli(start)
-                val endInstant = Instant.ofEpochMilli(end)
                 val response =
                     healthConnectClient.aggregate(
                         AggregateRequest(
                             metrics =
                             setOf(
-                                StepsRecord.COUNT_TOTAL
+                                StepsRecord.COUNT_TOTAL,
                             ),
                             timeRangeFilter =
                             TimeRangeFilter.between(
@@ -437,6 +426,7 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                 // time range.
                 val stepsInInterval =
                     response[StepsRecord.COUNT_TOTAL] ?: 0L
+
                 Log.i(
                     "FLUTTER_HEALTH::SUCCESS",
                     "returning $stepsInInterval steps"
@@ -453,6 +443,40 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
         }
     }
 
+    /** get the step records manually and filter out manual entries **/
+    private fun getStepCountFiltered(start: Long, end: Long, recordingMethodsToFilter: List<Int>, result: Result) {
+        scope.launch {
+            try {
+                val request =
+                    ReadRecordsRequest(
+                        recordType = StepsRecord::class,
+                        timeRangeFilter =
+                        TimeRangeFilter.between(
+                            Instant.ofEpochMilli(start),
+                            Instant.ofEpochMilli(end)
+                        ),
+                    )
+                val response = healthConnectClient.readRecords(request)
+                val filteredRecords = filterRecordsByRecordingMethods(
+                     recordingMethodsToFilter,
+                    response.records
+                )
+                val totalSteps = filteredRecords.sumOf { (it as StepsRecord).count.toInt() }
+                Log.i(
+                     "FLUTTER_HEALTH::SUCCESS",
+                     "returning $totalSteps steps (excluding manual entries)"
+                )
+                result.success(totalSteps)
+            } catch (e: Exception) {
+                Log.e(
+                    "FLUTTER_HEALTH::ERROR",
+                    "Unable to return steps due to the following exception:"
+                )
+                Log.e("FLUTTER_HEALTH::ERROR", Log.getStackTraceString(e))
+                result.success(null)
+            }
+        }
+    }
 
     private fun getHealthConnectSdkStatus(call: MethodCall, result: Result) {
         checkAvailability()
@@ -463,6 +487,24 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                 )
         }
         result.success(healthConnectStatus)
+    }
+    
+    /** Filter records by recording methods */
+    private fun filterRecordsByRecordingMethods(
+        recordingMethodsToFilter: List<Int>,
+        records: List<Record>
+    ): List<Record> {
+        if (recordingMethodsToFilter.isEmpty()) {
+            return records
+        }
+
+        return records.filter { record ->
+            Log.i(
+                "FLUTTER_HEALTH",
+                "Filtering record with recording method ${record.metadata.recordingMethod}, filtering by $recordingMethodsToFilter. Result: ${recordingMethodsToFilter.contains(record.metadata.recordingMethod)}"
+            )
+            return@filter !recordingMethodsToFilter.contains(record.metadata.recordingMethod)
+        }
     }
 
     private fun hasPermissions(call: MethodCall, result: Result) {
@@ -633,6 +675,13 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
         val startTime = Instant.ofEpochMilli(call.argument<Long>("startTime")!!)
         val endTime = Instant.ofEpochMilli(call.argument<Long>("endTime")!!)
         val healthConnectData = mutableListOf<Map<String, Any?>>()
+        val recordingMethodsToFilter = call.argument<List<Int>>("recordingMethodsToFilter")!!
+
+        Log.i(
+            "FLUTTER_HEALTH",
+            "Getting data for $dataType between $startTime and $endTime, filtering by $recordingMethodsToFilter"
+        )
+
         scope.launch {
             try {
                 mapToType[dataType]?.let { classType ->
@@ -680,7 +729,12 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
 
                     // Workout needs distance and total calories burned too
                     if (dataType == WORKOUT) {
-                        for (rec in records) {
+                        var filteredRecords = filterRecordsByRecordingMethods(
+                            recordingMethodsToFilter,
+                            records
+                        )
+
+                        for (rec in filteredRecords) {
                             val record = rec as ExerciseSessionRecord
                             val distanceRequest =
                                 healthConnectClient.readRecords(
@@ -743,6 +797,7 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             healthConnectData.add(
                                 // mapOf(
                                 mapOf<String, Any?>(
+                                    "uuid" to record.metadata.id,
                                     "workoutActivityType" to
                                             (workoutTypeMap
                                                 .filterValues {
@@ -795,7 +850,12 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         }
                         // Filter sleep stages for requested stage
                     } else if (classType == SleepSessionRecord::class) {
-                        for (rec in response.records) {
+                        val filteredRecords = filterRecordsByRecordingMethods(
+                            recordingMethodsToFilter,
+                            response.records
+                        )
+
+                        for (rec in filteredRecords) {
                             if (rec is SleepSessionRecord) {
                                 if (dataType == SLEEP_SESSION) {
                                     healthConnectData.addAll(
@@ -815,8 +875,7 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                                                     convertRecordStage(
                                                         recStage,
                                                         dataType,
-                                                        rec.metadata.dataOrigin
-                                                            .packageName
+                                                        rec.metadata
                                                     )
                                                 )
                                         }
@@ -825,7 +884,11 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             }
                         }
                     } else {
-                        for (rec in records) {
+                        val filteredRecords = filterRecordsByRecordingMethods(
+                            recordingMethodsToFilter,
+                            records
+                        )
+                        for (rec in filteredRecords) {
                             healthConnectData.addAll(
                                 convertRecord(rec, dataType)
                             )
@@ -847,10 +910,13 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
     private fun convertRecordStage(
         stage: SleepSessionRecord.Stage,
         dataType: String,
-        sourceName: String
+        metadata: Metadata
     ): List<Map<String, Any>> {
+        var sourceName = metadata.dataOrigin
+            .packageName
         return listOf(
             mapOf<String, Any>(
+                "uuid" to metadata.id,
                 "stage" to stage.stage,
                 "value" to
                         ChronoUnit.MINUTES.between(
@@ -946,6 +1012,8 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
             is WeightRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.weight
                                     .inKilograms,
@@ -959,12 +1027,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is HeightRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.height
                                     .inMeters,
@@ -978,12 +1050,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is BodyFatRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.percentage
                                     .value,
@@ -997,12 +1073,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is StepsRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to record.count,
                         "date_from" to
                                 record.startTime
@@ -1014,12 +1094,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is ActiveCaloriesBurnedRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.energy
                                     .inKilocalories,
@@ -1033,12 +1117,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is HeartRateRecord ->
                 return record.samples.map {
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to it.beatsPerMinute,
                         "date_from" to
                                 it.time.toEpochMilli(),
@@ -1047,12 +1135,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     )
                 }
 
             is HeartRateVariabilityRmssdRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.heartRateVariabilityMillis,
                         "date_from" to
@@ -1065,12 +1157,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is BodyTemperatureRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.temperature
                                     .inCelsius,
@@ -1084,12 +1180,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is BodyWaterMassRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.mass
                                     .inKilograms,
@@ -1103,12 +1203,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is BloodPressureRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 if (dataType ==
                                     BLOOD_PRESSURE_DIASTOLIC
@@ -1128,12 +1232,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is OxygenSaturationRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.percentage
                                     .value,
@@ -1147,12 +1255,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is BloodGlucoseRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.level
                                     .inMilligramsPerDeciliter,
@@ -1166,12 +1278,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is DistanceRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.distance
                                     .inMeters,
@@ -1185,12 +1301,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is HydrationRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.volume
                                     .inLiters,
@@ -1204,12 +1324,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is TotalCaloriesBurnedRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.energy
                                     .inKilocalories,
@@ -1223,12 +1347,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is BasalMetabolicRateRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.basalMetabolicRate
                                     .inKilocaloriesPerDay,
@@ -1242,12 +1370,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is SleepSessionRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "date_from" to
                                 record.startTime
                                     .toEpochMilli(),
@@ -1264,12 +1396,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     ),
                 )
 
             is RestingHeartRateRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to
                                 record.beatsPerMinute,
                         "date_from" to
@@ -1282,12 +1418,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     )
                 )
 
             is FloorsClimbedRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to record.floors,
                         "date_from" to
                                 record.startTime
@@ -1299,12 +1439,16 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     )
                 )
 
             is RespiratoryRateRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to
+                                metadata.id,
                         "value" to record.rate,
                         "date_from" to
                                 record.time
@@ -1316,12 +1460,15 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     )
                 )
 
             is NutritionRecord ->
                 return listOf(
                     mapOf<String, Any?>(
+                        "uuid" to metadata.id,
                         "calories" to record.energy?.inKilocalories,
                         "protein" to record.protein?.inGrams,
                         "carbs" to record.totalCarbohydrate?.inGrams,
@@ -1379,12 +1526,15 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     )
                 )
 
             is MenstruationFlowRecord ->
                 return listOf(
                     mapOf<String, Any>(
+                        "uuid" to metadata.id,
                         "value" to record.flow,
                         "date_from" to record.time.toEpochMilli(),
                         "date_to" to record.time.toEpochMilli(),
@@ -1392,6 +1542,8 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         "source_name" to
                                 metadata.dataOrigin
                                     .packageName,
+                        "recording_method" to
+                                        metadata.recordingMethod
                     )
                 )
             // is ExerciseSessionRecord -> return listOf(mapOf<String, Any>("value" to ,
@@ -1414,6 +1566,13 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
         val startTime = call.argument<Long>("startTime")!!
         val endTime = call.argument<Long>("endTime")!!
         val value = call.argument<Double>("value")!!
+        val recordingMethod = call.argument<Int>("recordingMethod")!!
+
+        Log.i(
+            "FLUTTER_HEALTH",
+            "Writing data for $type between $startTime and $endTime, value: $value, recording method: $recordingMethod"
+        )
+
         val record =
             when (type) {
                 BODY_FAT_PERCENTAGE ->
@@ -1427,6 +1586,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             value
                         ),
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 HEIGHT ->
@@ -1440,6 +1602,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             value
                         ),
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 WEIGHT ->
@@ -1453,6 +1618,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             value
                         ),
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 STEPS ->
@@ -1468,6 +1636,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         count = value.toLong(),
                         startZoneOffset = null,
                         endZoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 ACTIVE_ENERGY_BURNED ->
@@ -1486,6 +1657,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         ),
                         startZoneOffset = null,
                         endZoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 HEART_RATE ->
@@ -1511,6 +1685,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         ),
                         startZoneOffset = null,
                         endZoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 BODY_TEMPERATURE ->
@@ -1524,6 +1701,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             value
                         ),
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 BODY_WATER_MASS ->
@@ -1537,6 +1717,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             value
                         ),
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 BLOOD_OXYGEN ->
@@ -1550,6 +1733,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             value
                         ),
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 BLOOD_GLUCOSE ->
@@ -1563,6 +1749,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             value
                         ),
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 HEART_RATE_VARIABILITY_RMSSD ->
@@ -1575,6 +1764,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         value,
 
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 DISTANCE_DELTA ->
@@ -1593,6 +1785,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         ),
                         startZoneOffset = null,
                         endZoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 WATER ->
@@ -1611,6 +1806,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         ),
                         startZoneOffset = null,
                         endZoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 SLEEP_ASLEEP ->
@@ -1638,6 +1836,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                                     SleepSessionRecord
                                         .STAGE_TYPE_SLEEPING
                                 )
+                        ),
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
                         ),
                     )
 
@@ -1667,6 +1868,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                                         .STAGE_TYPE_LIGHT
                                 )
                         ),
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 SLEEP_DEEP ->
@@ -1694,6 +1898,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                                     SleepSessionRecord
                                         .STAGE_TYPE_DEEP
                                 )
+                        ),
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
                         ),
                     )
 
@@ -1723,6 +1930,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                                         .STAGE_TYPE_REM
                                 )
                         ),
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 SLEEP_OUT_OF_BED ->
@@ -1750,6 +1960,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                                     SleepSessionRecord
                                         .STAGE_TYPE_OUT_OF_BED
                                 )
+                        ),
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
                         ),
                     )
 
@@ -1779,8 +1992,66 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                                         .STAGE_TYPE_AWAKE
                                 )
                         ),
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
+                SLEEP_AWAKE_IN_BED ->
+                    SleepSessionRecord(
+                        startTime =
+                        Instant.ofEpochMilli(
+                            startTime
+                        ),
+                        endTime =
+                        Instant.ofEpochMilli(
+                            endTime
+                        ),
+                        startZoneOffset = null,
+                        endZoneOffset = null,
+                        stages =
+                        listOf(
+                            SleepSessionRecord
+                                .Stage(
+                                    Instant.ofEpochMilli(
+                                        startTime
+                                    ),
+                                    Instant.ofEpochMilli(
+                                        endTime
+                                    ),
+                                    SleepSessionRecord
+                                        .STAGE_TYPE_AWAKE_IN_BED
+                                )
+                        ),
+                    )
+
+                SLEEP_UNKNOWN ->
+                    SleepSessionRecord(
+                        startTime =
+                        Instant.ofEpochMilli(
+                            startTime
+                        ),
+                        endTime =
+                        Instant.ofEpochMilli(
+                            endTime
+                        ),
+                        startZoneOffset = null,
+                        endZoneOffset = null,
+                        stages =
+                        listOf(
+                            SleepSessionRecord
+                                .Stage(
+                                    Instant.ofEpochMilli(
+                                        startTime
+                                    ),
+                                    Instant.ofEpochMilli(
+                                        endTime
+                                    ),
+                                    SleepSessionRecord
+                                        .STAGE_TYPE_UNKNOWN
+                                )
+                        ),
+                    )
                 SLEEP_SESSION ->
                     SleepSessionRecord(
                         startTime =
@@ -1793,6 +2064,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         ),
                         startZoneOffset = null,
                         endZoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 RESTING_HEART_RATE ->
@@ -1804,6 +2078,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         beatsPerMinute =
                         value.toLong(),
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 BASAL_ENERGY_BURNED ->
@@ -1817,6 +2094,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             value
                         ),
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 FLIGHTS_CLIMBED ->
@@ -1832,6 +2112,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         floors = value,
                         startZoneOffset = null,
                         endZoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 RESPIRATORY_RATE ->
@@ -1842,6 +2125,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         ),
                         rate = value,
                         zoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
                 // AGGREGATE_STEP_COUNT -> StepsRecord()
                 TOTAL_CALORIES_BURNED ->
@@ -1860,12 +2146,18 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         ),
                         startZoneOffset = null,
                         endZoneOffset = null,
+                        metadata = Metadata(
+                            recordingMethod = recordingMethod,
+                        ),
                     )
 
                 MENSTRUATION_FLOW -> MenstruationFlowRecord(
                     time = Instant.ofEpochMilli(startTime),
                     flow = value.toInt(),
                     zoneOffset = null,
+                    metadata = Metadata(
+                        recordingMethod = recordingMethod,
+                    ),
                 )
 
                 BLOOD_PRESSURE_SYSTOLIC ->
@@ -1910,6 +2202,7 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
         val endTime = Instant.ofEpochMilli(call.argument<Long>("endTime")!!)
         val totalEnergyBurned = call.argument<Int>("totalEnergyBurned")
         val totalDistance = call.argument<Int>("totalDistance")
+        val recordingMethod = call.argument<Int>("recordingMethod")!!
         if (!workoutTypeMap.containsKey(type)) {
             result.success(false)
             Log.w(
@@ -1932,6 +2225,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                         endZoneOffset = null,
                         exerciseType = workoutType,
                         title = title,
+                            metadata = Metadata(
+                                recordingMethod = recordingMethod,
+                            ),
                     ),
                 )
                 if (totalDistance != null) {
@@ -1944,6 +2240,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             distance =
                             Length.meters(
                                 totalDistance.toDouble()
+                            ),
+                            metadata = Metadata(
+                                recordingMethod = recordingMethod,
                             ),
                         ),
                     )
@@ -1959,6 +2258,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                             Energy.kilocalories(
                                 totalEnergyBurned
                                     .toDouble()
+                            ),
+                            metadata = Metadata(
+                                recordingMethod = recordingMethod,
                             ),
                         ),
                     )
@@ -1988,6 +2290,7 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
         val systolic = call.argument<Double>("systolic")!!
         val diastolic = call.argument<Double>("diastolic")!!
         val startTime = Instant.ofEpochMilli(call.argument<Long>("startTime")!!)
+        val recordingMethod = call.argument<Int>("recordingMethod")!!
 
         scope.launch {
             try {
@@ -2004,6 +2307,9 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
                                 diastolic
                             ),
                             zoneOffset = null,
+                            metadata = Metadata(
+                                recordingMethod = recordingMethod,
+                            ),
                         ),
                     ),
                 )
@@ -2055,12 +2361,14 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
 
     private val mapSleepStageToType =
         hashMapOf(
+            0 to SLEEP_UNKNOWN,
             1 to SLEEP_AWAKE,
             2 to SLEEP_ASLEEP,
             3 to SLEEP_OUT_OF_BED,
             4 to SLEEP_LIGHT,
             5 to SLEEP_DEEP,
             6 to SLEEP_REM,
+            7 to SLEEP_AWAKE_IN_BED
         )
 
     private val mapMealTypeToType =
@@ -2102,11 +2410,13 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
             WATER to HydrationRecord::class,
             SLEEP_ASLEEP to SleepSessionRecord::class,
             SLEEP_AWAKE to SleepSessionRecord::class,
+            SLEEP_AWAKE_IN_BED to SleepSessionRecord::class,
             SLEEP_LIGHT to SleepSessionRecord::class,
             SLEEP_DEEP to SleepSessionRecord::class,
             SLEEP_REM to SleepSessionRecord::class,
             SLEEP_OUT_OF_BED to SleepSessionRecord::class,
             SLEEP_SESSION to SleepSessionRecord::class,
+            SLEEP_UNKNOWN to SleepSessionRecord::class,
             WORKOUT to ExerciseSessionRecord::class,
             NUTRITION to NutritionRecord::class,
             RESTING_HEART_RATE to RestingHeartRateRecord::class,
